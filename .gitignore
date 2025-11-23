@@ -1,0 +1,8 @@
+/venv
+/wandb
+/checkpoints
+__pycache__/
+*.pyc
+.env
+/wandb
+/raw_data
