@@ -9,7 +9,7 @@ split_dataset(
     val_size=0.2,
     is_already_split=True,
 )
-
+#i
 
 model = YOLO("yolov8n.yaml")
 

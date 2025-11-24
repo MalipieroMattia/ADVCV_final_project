@@ -1,0 +1,9 @@
+path: /Users/matma/Desktop/ITU/CV/ADVCV_final_project/Data_YOLO # absolute path to dataset
+test: images # relative path to test images
+train: train/images # relative path to training images
+val: val/images # relative path to validation images
+
+# classes
+names:
+  0:
+  
