@@ -1,53 +1,81 @@
+"""
+Weights & Biases Logger for YOLO Training
+==========================================
+Handles experiment tracking and visualization logging.
+"""
+
 import os
+from pathlib import Path
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+
 from dotenv import load_dotenv
 import wandb
-from typing import Dict, Any, Optional, List
+
 from utils.plots import TrainingPlotter
 
 load_dotenv()
 
 
 class WandbLogger:
-    """Weights & Biases logger for tracking experiments and visualizations."""
+    """Weights & Biases logger for tracking YOLO training experiments."""
 
     def __init__(
-        self, config, run_name: Optional[str] = None, notes: Optional[str] = None
+        self, 
+        config: Dict[str, Any], 
+        run_name: Optional[str] = None,
+        notes: Optional[str] = None
     ):
-        """Initialize W&B logger with config.
+        """
+        Initialize W&B logger.
 
         Args:
-            config: Config object with W&B settings
+            config: Configuration dictionary with wandb settings
             run_name: Optional custom run name
             notes: Optional run notes/description
         """
         self.config = config
+        self.wandb_config = config.get("wandb", {})
         self.plotter = TrainingPlotter()
         self.run = None
 
+        if not self.wandb_config.get("enabled", True):
+            print("Wandb logging disabled")
+            return
+
         api_key = os.getenv("WANDB_API_KEY")
-        wandb.login(key=api_key)
+        if api_key:
+            wandb.login(key=api_key)
+        else:
+            print("Warning: WANDB_API_KEY not set. Run 'wandb login' to authenticate.")
 
-        self.run = wandb.init(
-            project=self.config["wandb"]["project"],
-            entity=self.config["wandb"]["entity"],
-            tags=self.config["wandb"]["tags"] if self.config["wandb"]["tags"] else [],
-            name=self.config["wandb"]["run_name"],
-            notes=notes,
-            config={  # ADD THIS: Log config to W&B
-                "model": self.config.get("model", {}),
-                "training": self.config.get("training", {}),
-                "lora": self.config.get("lora", {}),
-                "data": self.config.get("data", {}),
-            },
-        )
+        if run_name is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_name = config.get("model", {}).get("name", "yolo")
+            run_name = f"{model_name}_{timestamp}"
 
-    def log_metrics(self, metrics: Dict[str, Any], step: Optional[int] = None):
-        """Log scalar metrics to W&B.
+        try:
+            self.run = wandb.init(
+                project=self.wandb_config.get("project", "PCB_Defect_Detection"),
+                entity=self.wandb_config.get("entity"),
+                tags=self.wandb_config.get("tags", ["yolo", "pcb"]),
+                name=run_name,
+                notes=notes,
+                config={
+                    "model": config.get("model", {}),
+                    "training": config.get("training", {}),
+                    "augmentation": config.get("augmentation", {}),
+                    "data": config.get("data", {}),
+                },
+                mode=self.wandb_config.get("mode", "online"),
+            )
+            print(f"Wandb run initialized: {run_name}")
+        except Exception as e:
+            print(f"Warning: Could not initialize wandb: {e}")
+            self.run = None
 
-        Args:
-            metrics: Dictionary of metric names and values
-            step: Optional step number (epoch/iteration)
-        """
+    def log_metrics(self, metrics: Dict[str, Any], step: Optional[int] = None) -> None:
+        """Log scalar metrics to W&B."""
         if self.run:
             wandb.log(metrics, step=step)
 
@@ -57,115 +85,74 @@ class WandbLogger:
         val_losses: List[float],
         epochs: Optional[List[int]] = None,
         step: Optional[int] = None,
-    ):
-        """Log training and validation loss curves.
-
-        Args:
-            train_losses: List of training losses
-            val_losses: List of validation losses
-            epochs: Optional list of epoch numbers
-            step: Optional step number for logging
-        """
+    ) -> None:
+        """Log training and validation loss curves."""
         if self.run:
             fig = self.plotter.plot_loss_curves(train_losses, val_losses, epochs)
             wandb.log({"loss_curves": wandb.Image(fig)}, step=step)
             self.plotter.close_figure(fig)
 
-    def log_metrics_plot(
+    def log_detection_metrics(
         self,
-        metrics_dict: Dict[str, List[float]],
-        metric_name: str,
+        metrics: Dict[str, float],
         step: Optional[int] = None,
-    ):
-        """Log metrics plot (e.g., accuracy, F1) over training.
-
-        Args:
-            metrics_dict: Dict with 'train' and 'val' keys containing metric lists
-            metric_name: Name of the metric
-            step: Optional step number for logging
-        """
+    ) -> None:
+        """Log object detection specific metrics."""
         if self.run:
-            fig = self.plotter.plot_metrics(metrics_dict, metric_name)
-            wandb.log({f"{metric_name.lower()}_plot": wandb.Image(fig)}, step=step)
-            self.plotter.close_figure(fig)
+            prefixed = {f"detection/{k}": v for k, v in metrics.items()}
+            wandb.log(prefixed, step=step)
 
     def log_confusion_matrix(
         self, cm, class_names: Optional[List[str]] = None, step: Optional[int] = None
-    ):
-        """Log confusion matrix visualization.
-
-        Args:
-            cm: Confusion matrix array
-            class_names: Optional list of class names
-            step: Optional step number for logging
-        """
+    ) -> None:
+        """Log confusion matrix visualization."""
         if self.run:
             fig = self.plotter.plot_confusion_matrix(cm, class_names)
             wandb.log({"confusion_matrix": wandb.Image(fig)}, step=step)
             self.plotter.close_figure(fig)
 
-    def log_learning_rate(
+    def log_class_distribution(
         self,
-        learning_rates: List[float],
-        steps: Optional[List[int]] = None,
+        distribution: Dict[str, int],
+        title: str = "Class Distribution",
         step: Optional[int] = None,
-    ):
-        """Log learning rate schedule.
-
-        Args:
-            learning_rates: List of learning rates
-            steps: Optional list of step numbers
-            step: Optional step number for logging
-        """
+    ) -> None:
+        """Log class distribution bar chart."""
         if self.run:
-            fig = self.plotter.plot_learning_rate(learning_rates, steps)
-            wandb.log({"learning_rate_schedule": wandb.Image(fig)}, step=step)
+            fig = self.plotter.plot_class_distribution(distribution, title)
+            wandb.log({"class_distribution": wandb.Image(fig)}, step=step)
             self.plotter.close_figure(fig)
+
+    def log_model(self, model_path: str, name: str = "model") -> None:
+        """Log model artifact to W&B."""
+        if self.run:
+            artifact = wandb.Artifact(name, type="model")
+            artifact.add_file(model_path)
+            wandb.log_artifact(artifact)
+            print(f"Logged model artifact: {name}")
 
     def log_trainable_params(
         self, params_dict: Dict[str, float], step: Optional[int] = None
-    ):
-        """Log trainable parameters comparison.
-
-        Args:
-            params_dict: Dict with model names and parameter counts
-            step: Optional step number for logging
-        """
+    ) -> None:
+        """Log trainable parameters comparison."""
         if self.run:
             fig = self.plotter.plot_trainable_params(params_dict)
             wandb.log({"trainable_parameters": wandb.Image(fig)}, step=step)
             self.plotter.close_figure(fig)
 
-    def log_model(self, model_path: str, name: str = "model"):
-        """Log model artifact to W&B.
-
-        Args:
-            model_path: Path to saved model
-            name: Artifact name
-        """
-        if self.run:
-            artifact = wandb.Artifact(name, type="model")
-            artifact.add_file(model_path)
-            wandb.log_artifact(artifact)
-
-    def update_config(self, config_dict: Dict[str, Any]):
-        """Update W&B run config with additional parameters.
-
-        Args:
-            config_dict: Dictionary of config parameters to add
-        """
+    def update_config(self, config_dict: Dict[str, Any]) -> None:
+        """Update W&B run config."""
         if self.run:
             wandb.config.update(config_dict)
 
-    def finish(self):
+    def finish(self) -> None:
         """Finish the W&B run."""
         if self.run:
             wandb.finish()
+            print("Wandb run finished")
 
     def __enter__(self):
-        """Context manager entry."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
         self.finish()

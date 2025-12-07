@@ -1,9 +1,112 @@
-path: /Users/matma/Desktop/ITU/CV/ADVCV_final_project/Data_YOLO # absolute path to dataset
-test: images # relative path to test images
-train: train/images # relative path to training images
-val: val/images # relative path to validation images
+# =============================================================================
+# PCB Defect Detection Configuration
+# =============================================================================
 
-# classes
-names:
-  0:
+seed: 42
+project_name: "PCB_Defect_Detection"
+
+# =============================================================================
+# MODEL CONFIGURATION
+# =============================================================================
+model:
+  name: "yolov8n"
+  pretrained: true
+  freeze_strategy: "none"  # Options: "none", "backbone", "partial"
+  freeze_layers: 10
+
+# =============================================================================
+# DATA CONFIGURATION
+# =============================================================================
+data:
+  # For unsplit data: just images/ and labels/ folders
+  # For pre-split data: images/{train,val} and labels/{train,val}
+  # The system auto-detects which format you have
+  root: "raw_data/Data_YOLO"
   
+  # Split configuration (only used if data is NOT pre-split)
+  split:
+    val_ratio: 0.2      # 20% for validation
+    test_ratio: 0.0     # 0% for test (no test set)
+    # Note: train_ratio = 1 - val_ratio - test_ratio
+  
+  # Paths (for pre-split data)
+  train_images: "images/train"
+  train_labels: "labels/train"
+  val_images: "images/val"
+  val_labels: "labels/val"
+  
+  num_classes: 9
+  class_names:
+    0: "SH"
+    1: "SP"
+    2: "SC"
+    3: "OP"
+    4: "MB"
+    5: "HB"
+    6: "CS"
+    7: "CFO"
+    8: "BMFO"
+
+# =============================================================================
+# TRAINING CONFIGURATION
+# =============================================================================
+training:
+  epochs: 100
+  batch_size: 16
+  imgsz: 640
+  patience: 50
+  save_period: 10
+  workers: 8
+  device: null
+  
+  optimizer:
+    name: "auto"
+    lr0: 0.01
+    lrf: 0.01
+    momentum: 0.937
+    weight_decay: 0.0005
+    warmup_epochs: 3.0
+    warmup_momentum: 0.8
+    warmup_bias_lr: 0.1
+
+# =============================================================================
+# AUGMENTATION CONFIGURATION
+# =============================================================================
+augmentation:
+  enabled: true
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+  degrees: 0.0
+  translate: 0.1
+  scale: 0.5
+  shear: 0.0
+  perspective: 0.0
+  flipud: 0.0
+  fliplr: 0.5
+  mosaic: 1.0
+  mixup: 0.0
+  copy_paste: 0.0
+
+# =============================================================================
+# OUTPUT CONFIGURATION
+# =============================================================================
+output:
+  project: "runs/detect"
+  name: "train"
+  exist_ok: true
+  save: true
+  save_txt: true
+  save_conf: true
+  plots: true
+
+# =============================================================================
+# WEIGHTS & BIASES CONFIGURATION
+# =============================================================================
+wandb:
+  enabled: true
+  project: "PCB_Defect_Detection"
+  entity: null
+  run_name: null
+  tags: ["yolov8", "pcb", "defect-detection"]
+  mode: "online"

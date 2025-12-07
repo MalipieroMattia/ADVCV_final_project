@@ -1,103 +1,196 @@
 #!/bin/bash
 
-# Exit immediately if a command exits with a non-zero status
-#set -e
+# =============================================================================
+# Project Initialization Script
+# =============================================================================
+# Usage:
+#   bash init.sh                              # Use defaults
+#   bash init.sh --data /work/dataset         # Override data path
+#   bash init.sh --help                       # Show all options
+# =============================================================================
 
+# =============================================================================
+# CONFIGURATION - Edit these for your project
+# =============================================================================
+DEFAULT_REPO_NAME="ADVCV_final_project"
+DEFAULT_REPO_URL="https://github.com/MalipieroMattia/ADVCV_final_project.git"
+DEFAULT_BRANCH="main"
+DEFAULT_DATA_PATH="raw_data/Data_YOLO"
+DEFAULT_NUM_CLASSES=9
+DEFAULT_CLASS_NAMES="0:SH 1:SP 2:SC 3:OP 4:MB 5:HB 6:CS 7:CFO 8:BMFO"
 
-# Function to display info messages
-function echo_info {
-    echo -e "\033[1;34m[INFO]\033[0m $1"
+VENV_DIR=".venv"
+REQUIREMENTS_FILE="requirements.txt"
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+function echo_info { echo -e "\033[1;34m[INFO]\033[0m $1"; }
+function echo_success { echo -e "\033[1;32m[SUCCESS]\033[0m $1"; }
+function echo_error { echo -e "\033[1;31m[ERROR]\033[0m $1"; }
+function echo_warning { echo -e "\033[1;33m[WARNING]\033[0m $1"; }
+
+function show_help {
+    echo ""
+    echo "Usage: bash init.sh [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --data PATH         Path to dataset (default: $DEFAULT_DATA_PATH)"
+    echo "  --repo URL          Git repository URL"
+    echo "  --repo-name NAME    Repository directory name"
+    echo "  --branch BRANCH     Git branch to checkout"
+    echo "  --skip-clone        Skip cloning/pulling repository"
+    echo "  --skip-venv         Skip virtual environment setup"
+    echo "  --skip-deps         Skip installing dependencies"
+    echo "  --skip-wandb        Skip Weights & Biases setup"
+    echo "  --wandb-key KEY     Weights & Biases API key"
+    echo "  --help              Show this help message"
+    echo ""
+    exit 0
 }
 
-function echo_error {
-    echo -e "\033[1;31m[ERROR]\033[0m $1"
-}
+# =============================================================================
+# Parse Command Line Arguments
+# =============================================================================
+REPO_NAME="$DEFAULT_REPO_NAME"
+REPO_URL="$DEFAULT_REPO_URL"
+BRANCH="$DEFAULT_BRANCH"
+DATA_PATH="$DEFAULT_DATA_PATH"
+SKIP_CLONE=false
+SKIP_VENV=false
+SKIP_DEPS=false
+SKIP_WANDB=false
+WANDB_KEY=""
 
-# Detect Operating System
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --data) DATA_PATH="$2"; shift 2 ;;
+        --repo) REPO_URL="$2"; shift 2 ;;
+        --repo-name) REPO_NAME="$2"; shift 2 ;;
+        --branch) BRANCH="$2"; shift 2 ;;
+        --skip-clone) SKIP_CLONE=true; shift ;;
+        --skip-venv) SKIP_VENV=true; shift ;;
+        --skip-deps) SKIP_DEPS=true; shift ;;
+        --skip-wandb) SKIP_WANDB=true; shift ;;
+        --wandb-key) WANDB_KEY="$2"; shift 2 ;;
+        --help|-h) show_help ;;
+        *) DATA_PATH="$1"; shift ;;
+    esac
+done
+
+# =============================================================================
+# Main Script
+# =============================================================================
+echo ""
+echo "=============================================="
+echo "  Project Environment Setup"
+echo "=============================================="
+echo ""
+
 OS="$(uname)"
-echo_info "Detected Operating System: $OS"
+echo_info "Operating System: $OS"
 
-# Function to install packages on Linux
-install_linux_packages() {
-    echo_info "Updating package lists..."
-    sudo apt-get update
-
-    echo_info "Installing Python3, venv, and pip..."
-    sudo apt-get install -y python3 python3-venv python3-pip git
-}
-
-# Function to install packages on macOS
-install_macos_packages() {
-    echo_info "Updating Homebrew..."
-    brew update
-
-    echo_info "Installing Python3..."
-    brew install python3
-
-    echo_info "Installing Git..."
-    brew install git
-}
-
-# Install necessary packages based on OS
-if [[ "$OS" == "Linux" ]]; then
-    install_linux_packages
-elif [[ "$OS" == "Darwin" ]]; then
-    install_macos_packages
+IS_UCLOUD=false
+if [[ "$OS" == "Linux" ]] && [[ -d "/work" ]]; then
+    IS_UCLOUD=true
+    echo_info "Environment: UCloud"
 else
-    echo_error "Unsupported Operating System: $OS"
-    exit 1
+    echo_info "Environment: Local"
 fi
 
-# Clone the repository if not already cloned
-REPO_DIR="AVDCV_final_project"  # Replace with your actual repo name
-REPO_URL="https://github.com/MalipieroMattia/ADVCV_final_project"  # Replace with your repo URL
+# Install packages (local only)
+if [[ "$IS_UCLOUD" == false ]]; then
+    if [[ "$OS" == "Linux" ]]; then
+        echo_info "Installing system packages..."
+        sudo apt-get update -qq
+        sudo apt-get install -y python3 python3-venv python3-pip git > /dev/null 2>&1
+    elif [[ "$OS" == "Darwin" ]]; then
+        if command -v brew &> /dev/null; then
+            brew install python3 git > /dev/null 2>&1
+        fi
+    fi
+fi
 
-if [ ! -d "$REPO_DIR" ]; then
-    echo_info "Cloning repository from GitHub..."
-    git clone "$REPO_URL"
+# Clone/Update Repository
+if [[ "$SKIP_CLONE" == false ]]; then
+    if [ ! -d "$REPO_NAME" ]; then
+        echo_info "Cloning repository..."
+        git clone --branch "$BRANCH" "$REPO_URL" "$REPO_NAME"
+        cd "$REPO_NAME"
+    else
+        echo_info "Updating repository..."
+        cd "$REPO_NAME"
+        git pull origin "$BRANCH" 2>/dev/null || git pull
+    fi
 else
-    echo_info "Repository already cloned. Pulling latest changes..."
-    cd "$REPO_DIR"
-    git pull
+    echo_info "Skipping repository clone/update"
+    [ -d "$REPO_NAME" ] && cd "$REPO_NAME"
 fi
 
-# Set up virtual environment
-if [ ! -d "venv" ]; then
-    echo_info "Setting up virtual environment..."
-    python3 -m venv .venv
+# Virtual Environment
+if [[ "$SKIP_VENV" == false ]]; then
+    [ ! -d "$VENV_DIR" ] && python3 -m venv "$VENV_DIR"
+    source "$VENV_DIR/bin/activate"
+    
+    if [[ "$SKIP_DEPS" == false ]]; then
+        pip install --upgrade pip --quiet
+        [ -f "$REQUIREMENTS_FILE" ] && pip install -r "$REQUIREMENTS_FILE" --quiet
+    fi
+fi
+
+# Generate data.yaml
+mkdir -p configs
+if [[ "$DATA_PATH" == /* ]]; then
+    YAML_PATH="$DATA_PATH"
 else
-    echo_info "Virtual environment already exists."
+    YAML_PATH="../$DATA_PATH"
 fi
 
-# Change to repository directory
-cd "$REPO_DIR"
+cat > configs/data.yaml << EOF
+path: $YAML_PATH
+train: images/train
+val: images/val
+nc: $DEFAULT_NUM_CLASSES
+names:
+EOF
 
-# Activate virtual environment
-echo_info "Activating virtual environment..."
-source .venv/bin/activate
+for class_entry in $DEFAULT_CLASS_NAMES; do
+    echo "  ${class_entry%%:*}: ${class_entry#*:}" >> configs/data.yaml
+done
 
-# Upgrade pip
-echo_info "Upgrading pip..."
-pip install --upgrade pip
+echo_success "Created configs/data.yaml"
 
-# Install requirements
-echo_info "Installing dependencies..."
-pip install -r requirements.txt
-
-# Setup Wandb
-echo_info "Setting up Wandb..."
-if [ -z "$WANDB_API_KEY" ]; then
-    echo_info "Please enter your Wandb API key (get it from: https://wandb.ai/authorize):"
-    read -s WANDB_API_KEY
-    export WANDB_API_KEY
+# Verify Dataset
+if [ -d "$DATA_PATH/images/train" ]; then
+    TRAIN_COUNT=$(ls -1 "$DATA_PATH/images/train" 2>/dev/null | wc -l)
+    VAL_COUNT=$(ls -1 "$DATA_PATH/images/val" 2>/dev/null | wc -l)
+    echo_success "Dataset found: Train=$TRAIN_COUNT, Val=$VAL_COUNT"
+else
+    echo_warning "Dataset not found at: $DATA_PATH"
 fi
 
-# Create .env file
-echo "WANDB_API_KEY=$WANDB_API_KEY" > .env
-echo_info ".env file created"
+# Wandb Setup
+if [[ "$SKIP_WANDB" == false ]]; then
+    [ -n "$WANDB_KEY" ] && export WANDB_API_KEY="$WANDB_KEY"
+    if [ -n "$WANDB_API_KEY" ]; then
+        echo "WANDB_API_KEY=$WANDB_API_KEY" > .env
+        wandb login "$WANDB_API_KEY" 2>/dev/null && echo_success "Logged into W&B"
+    else
+        echo "# WANDB_API_KEY=your_key_here" > .env
+        echo_warning "WANDB_API_KEY not set"
+    fi
+fi
 
-# Login to wandb
-echo_info "Logging into Wandb..."
-wandb login $WANDB_API_KEY
-
-echo_info "Initialization complete."
+# Summary
+echo ""
+echo "=============================================="
+echo_success "Setup Complete!"
+echo "=============================================="
+echo ""
+echo "  Data path: $DATA_PATH"
+echo "  Directory: $(pwd)"
+echo ""
+echo "Next steps:"
+echo "  source $VENV_DIR/bin/activate"
+echo "  python main.py --help"
+echo ""

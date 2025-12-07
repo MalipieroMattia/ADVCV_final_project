@@ -1,8 +1,39 @@
+# Virtual environment
 /venv
+/.venv
+.venv/
+
+# Weights & Biases
 /wandb
+
+# Checkpoints and model weights
 /checkpoints
+/runs
+*.pt
+*.pth
+
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+
+# Environment files
 .env
-/wandb
+
+# Dataset (upload to UCloud drive instead)
 /raw_data
+/data/processed
+
+# IDE
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
