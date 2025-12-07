@@ -50,7 +50,7 @@ fi
 
 # Clone the repository if not already cloned
 REPO_DIR="AVDCV_final_project"  # Replace with your actual repo name
-REPO_URL="https://github.com/MalipieroMattia/ADVCV_final_project"  # Replace with your repo URL
+REPO_URL="https://github.com/MalipieroMattia/ADVCV_final_project/tree/seadronessea"  # Replace with your repo URL
 
 if [ ! -d "$REPO_DIR" ]; then
     echo_info "Cloning repository from GitHub..."
