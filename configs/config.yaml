@@ -9,7 +9,7 @@ project_name: "PCB_Defect_Detection"
 # MODEL CONFIGURATION
 # =============================================================================
 model:
-  name: "yolov8n"
+  name: "yolov8m"
   pretrained: true
   freeze_strategy: "none"  # Options: "none", "backbone", "partial"
   freeze_layers: 10
@@ -21,13 +21,14 @@ data:
   # For unsplit data: just images/ and labels/ folders
   # For pre-split data: images/{train,val} and labels/{train,val}
   # The system auto-detects which format you have
-  root: "raw_data/Data_YOLO"
+  # UCloud path (override with --data-path for local development)
+  root: "/work/Data_YOLO_unsplit"
   
   # Split configuration (only used if data is NOT pre-split)
   split:
-    val_ratio: 0.2      # 20% for validation
-    test_ratio: 0.0     # 0% for test (no test set)
-    # Note: train_ratio = 1 - val_ratio - test_ratio
+    val_ratio: 0.15     # 15% for validation
+    test_ratio: 0.15    # 15% for test (held out for final evaluation)
+    # Note: train_ratio = 1 - val_ratio - test_ratio = 70%
   
   # Paths (for pre-split data)
   train_images: "images/train"
@@ -92,7 +93,7 @@ augmentation:
 # OUTPUT CONFIGURATION
 # =============================================================================
 output:
-  project: "runs/detect"
+  project: "PCB_Defect_Detection"
   name: "train"
   exist_ok: true
   save: true
@@ -106,7 +107,7 @@ output:
 wandb:
   enabled: true
   project: "PCB_Defect_Detection"
-  entity: null
+  entity: "jojs-it-universitetet-i-k-benhavn"
   run_name: null
   tags: ["yolov8", "pcb", "defect-detection"]
   mode: "online"

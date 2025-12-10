@@ -193,3 +193,4 @@ class ModelLoader:
             print("Using CPU")
         return device
 
+
