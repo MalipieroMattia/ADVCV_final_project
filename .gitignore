@@ -21,8 +21,9 @@ __pycache__/
 .env
 
 # Dataset (upload to UCloud drive instead)
-/raw_data
+/raw_data*
 /data/processed
+/data_eda*
 
 # IDE
 .idea/

@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 from typing import Dict, List, Optional
+from pathlib import Path
+import pandas as pd
 
 
 class TrainingPlotter:
@@ -160,6 +162,109 @@ class TrainingPlotter:
                 va="center",
                 fontsize=10,
             )
+
+        plt.tight_layout()
+        return fig
+
+    def plot_losses_from_results(self, results_csv_path: str) -> Optional[plt.Figure]:
+        """Plot train/val losses from Ultralytics results.csv."""
+        results_csv = Path(results_csv_path)
+        if not results_csv.exists():
+            return None
+
+        df = pd.read_csv(results_csv)
+        df.columns = df.columns.str.strip()
+        if "epoch" in df.columns:
+            epochs = df["epoch"]
+        else:
+            epochs = range(len(df))
+
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+        fig.suptitle("Training vs Validation Losses", fontsize=14, fontweight="bold")
+
+        # Box loss
+        ax = axes[0, 0]
+        if "train/box_loss" in df.columns and "val/box_loss" in df.columns:
+            ax.plot(epochs, df["train/box_loss"], label="Train Box", linewidth=2)
+            ax.plot(epochs, df["val/box_loss"], label="Val Box", linewidth=2)
+        ax.set_title("Box Loss")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        # Class loss
+        ax = axes[0, 1]
+        if "train/cls_loss" in df.columns and "val/cls_loss" in df.columns:
+            ax.plot(epochs, df["train/cls_loss"], label="Train Cls", linewidth=2)
+            ax.plot(epochs, df["val/cls_loss"], label="Val Cls", linewidth=2)
+        ax.set_title("Class Loss")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        # DFL loss
+        ax = axes[1, 0]
+        if "train/dfl_loss" in df.columns and "val/dfl_loss" in df.columns:
+            ax.plot(epochs, df["train/dfl_loss"], label="Train DFL", linewidth=2)
+            ax.plot(epochs, df["val/dfl_loss"], label="Val DFL", linewidth=2)
+        ax.set_title("DFL Loss")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        # Total loss (approx)
+        ax = axes[1, 1]
+        train_total = np.zeros(len(df))
+        val_total = np.zeros(len(df))
+        for col in ["train/box_loss", "train/cls_loss", "train/dfl_loss"]:
+            if col in df.columns:
+                train_total += df[col].fillna(0)
+        for col in ["val/box_loss", "val/cls_loss", "val/dfl_loss"]:
+            if col in df.columns:
+                val_total += df[col].fillna(0)
+        ax.plot(epochs, train_total, label="Train Total", linewidth=2)
+        ax.plot(epochs, val_total, label="Val Total", linewidth=2)
+        ax.set_title("Total Loss (Approx)")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        plt.tight_layout()
+        return fig
+
+    def plot_metrics_from_results(self, results_csv_path: str) -> Optional[plt.Figure]:
+        """Plot precision/recall and mAP from Ultralytics results.csv."""
+        results_csv = Path(results_csv_path)
+        if not results_csv.exists():
+            return None
+
+        df = pd.read_csv(results_csv)
+        df.columns = df.columns.str.strip()
+        if "epoch" in df.columns:
+            epochs = df["epoch"]
+        else:
+            epochs = range(len(df))
+
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+        fig.suptitle("Validation Metrics", fontsize=14, fontweight="bold")
+
+        # Precision & recall
+        ax = axes[0]
+        if "metrics/precision(B)" in df.columns:
+            ax.plot(epochs, df["metrics/precision(B)"], label="Precision", linewidth=2)
+        if "metrics/recall(B)" in df.columns:
+            ax.plot(epochs, df["metrics/recall(B)"], label="Recall", linewidth=2)
+        ax.set_title("Precision & Recall")
+        ax.set_ylim([0, 1.05])
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        # mAP
+        ax = axes[1]
+        if "metrics/mAP50(B)" in df.columns:
+            ax.plot(epochs, df["metrics/mAP50(B)"], label="mAP@0.5", linewidth=2)
+        if "metrics/mAP50-95(B)" in df.columns:
+            ax.plot(epochs, df["metrics/mAP50-95(B)"], label="mAP@0.5:0.95", linewidth=2)
+        ax.set_title("mAP")
+        ax.set_ylim([0, 1.05])
+        ax.grid(True, alpha=0.3)
+        ax.legend()
 
         plt.tight_layout()
         return fig

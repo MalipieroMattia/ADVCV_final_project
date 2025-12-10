@@ -8,16 +8,51 @@ Usage:
     python main.py --config configs/config.yaml       # Custom config
     python main.py --mode evaluate --weights best.pt  # Evaluate model
     python main.py --mode predict --weights best.pt --source image.jpg
+    python main.py --skip-setup                       # Skip auto-install
 """
 
-import argparse
+import importlib.util
+import subprocess
+import sys
 from pathlib import Path
-import yaml
 
-from model.model_loader import ModelLoader
-from utils.training import YOLOTrainer
-from utils.evaluation import YOLOEvaluator
-from utils.data_loader import DatasetManager
+
+def ensure_dependencies():
+    """Auto-install requirements if missing."""
+    requirements_file = Path(__file__).parent / "requirements.txt"
+
+    if not requirements_file.exists():
+        return
+
+    # Check if ultralytics is installed (key dependency)
+    if importlib.util.find_spec("ultralytics") is not None:
+        return  # Already installed
+
+    print("📦 Installing dependencies...")
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "-r", str(requirements_file), "-q"]
+        )
+        print("✅ Dependencies installed!\n")
+    except subprocess.CalledProcessError as e:
+        print(f"⚠️ Failed to install dependencies: {e}")
+        print("Run manually: pip install -r requirements.txt")
+
+
+# Auto-install before importing dependencies
+if "--skip-setup" not in sys.argv:
+    ensure_dependencies()
+
+import argparse  # noqa: E402
+import yaml  # noqa: E402
+
+import wandb  # noqa: E402
+from ultralytics import YOLO  # noqa: E402
+from model.model_loader import ModelLoader  # noqa: E402
+from utils.training import YOLOTrainer  # noqa: E402
+from utils.evaluation import YOLOEvaluator  # noqa: E402
+from utils.data_loader import DatasetManager  # noqa: E402
+from utils.plots import TrainingPlotter  # noqa: E402
 
 
 def load_config(config_path: str) -> dict:
@@ -33,8 +68,59 @@ def load_config(config_path: str) -> dict:
     return config
 
 
+def log_training_visuals(results) -> None:
+    """Log custom plots and key images to WandB after training."""
+    if results is None:
+        return
+    if wandb.run is None:
+        print("Wandb run not active, skipping custom plot logging.")
+        return
+
+    save_dir = Path(results.save_dir)
+    plotter = TrainingPlotter()
+    visuals = {}
+
+    results_csv = save_dir / "results.csv"
+    try:
+        loss_fig = plotter.plot_losses_from_results(str(results_csv))
+        if loss_fig:
+            visuals["plots/train_val_losses"] = wandb.Image(loss_fig)
+            plotter.close_figure(loss_fig)
+    except Exception as e:
+        print(f"Could not create loss plot: {e}")
+
+    try:
+        metrics_fig = plotter.plot_metrics_from_results(str(results_csv))
+        if metrics_fig:
+            visuals["plots/val_metrics"] = wandb.Image(metrics_fig)
+            plotter.close_figure(metrics_fig)
+    except Exception as e:
+        print(f"Could not create metrics plot: {e}")
+
+    built_in_plots = {
+        "results": save_dir / "results.png",
+        "PR_curve": save_dir / "PR_curve.png",
+        "F1_curve": save_dir / "F1_curve.png",
+        "P_curve": save_dir / "P_curve.png",
+        "R_curve": save_dir / "R_curve.png",
+        "confusion_matrix": save_dir / "confusion_matrix.png",
+        "confusion_matrix_normalized": save_dir / "confusion_matrix_normalized.png",
+        "labels": save_dir / "labels.jpg",
+        "labels_correlogram": save_dir / "labels_correlogram.jpg",
+        "val_batch0_pred": save_dir / "val_batch0_pred.jpg",
+    }
+
+    for name, path in built_in_plots.items():
+        if path.exists():
+            visuals[f"ultralytics/{name}"] = wandb.Image(str(path))
+
+    if visuals:
+        wandb.log(visuals)
+        print(f"Logged {len(visuals)} custom plots to wandb.")
+
+
 def train(args, config: dict) -> None:
-    """Run training pipeline."""
+    """Run training pipeline with automatic test evaluation."""
     print("\n" + "=" * 60)
     print("  PCB Defect Detection - Training")
     print("=" * 60)
@@ -48,6 +134,11 @@ def train(args, config: dict) -> None:
         config["training"]["batch_size"] = args.batch
     if args.model:
         config["model"]["name"] = args.model
+    if args.freeze is not None:
+        config["model"]["freeze_layers"] = args.freeze
+    if args.name:
+        config["output"]["name"] = args.name
+        config["wandb"]["run_name"] = args.name
     if args.test_run:
         config["training"]["epochs"] = 1
         print("\n🧪 TEST RUN MODE: Training for 1 epoch only\n")
@@ -69,6 +160,53 @@ def train(args, config: dict) -> None:
 
     trainer = YOLOTrainer(model, config, data_yaml_path)
     results = trainer.train()
+    log_training_visuals(results)
+
+    # Run evaluation on test set if it exists
+    test_ratio = config.get("data", {}).get("split", {}).get("test_ratio", 0)
+    if test_ratio > 0 and results is not None:
+        print("\n" + "=" * 60)
+        print("  Running Final Evaluation on Test Set")
+        print("=" * 60)
+
+        best_weights = f"{results.save_dir}/weights/best.pt"
+        evaluator = YOLOEvaluator(model_path=best_weights)
+
+        # Evaluate on test set
+        test_metrics = evaluator.evaluate(
+            data_yaml=data_yaml_path,
+            split="test",
+            project=str(results.save_dir),
+            name="test_evaluation",
+            analyze_errors=True,
+        )
+
+        # Log test metrics to the active WandB run with test/ prefix
+        # Metrics are in 0-1 scale (YOLO format) - multiply by 100 to compare with COCO-style
+        wandb_test_metrics = {
+            "test/mAP50": test_metrics.get("mAP50", 0),
+            "test/mAP50-95": test_metrics.get("mAP50-95", 0),
+            "test/precision": test_metrics.get("precision", 0),
+            "test/recall": test_metrics.get("recall", 0),
+        }
+        # Add per-class AP50 metrics
+        for key, value in test_metrics.items():
+            if key.startswith(("AP50_", "AP50-95_", "Precision_", "Recall_")):
+                wandb_test_metrics[f"test/{key}"] = value
+        
+        if wandb.run is not None:
+            wandb.log(wandb_test_metrics)
+            wandb.summary.update(wandb_test_metrics)
+            print(f"\n✓ Test metrics logged to WandB:")
+        else:
+            print(f"\n⚠ WandB run not active, test metrics not logged to WandB:")
+        
+        print(f"    test/mAP50: {test_metrics.get('mAP50', 0):.4f} (×100 = {test_metrics.get('mAP50', 0)*100:.2f}%)")
+        print(f"    test/mAP50-95: {test_metrics.get('mAP50-95', 0):.4f} (×100 = {test_metrics.get('mAP50-95', 0)*100:.2f}%)")
+
+        print(
+            f"\n✓ Test evaluation complete. Results saved to: {results.save_dir}/test_evaluation/"
+        )
 
     return results
 
@@ -98,16 +236,16 @@ def evaluate(args, config: dict) -> None:
     metrics = evaluator.evaluate(
         data_yaml=data_yaml_path,
         split=args.split,
-        save_results=True,
         project="runs/evaluate",
         name=args.name or "eval",
+        analyze_errors=True,
     )
 
     return metrics
 
 
 def predict(args, config: dict) -> None:
-    """Run inference on images."""
+    """Run inference on images using YOLO directly."""
     print("\n" + "=" * 60)
     print("  PCB Defect Detection - Inference")
     print("=" * 60)
@@ -120,28 +258,20 @@ def predict(args, config: dict) -> None:
         print("❌ Please provide --source path to image(s)")
         return
 
-    evaluator = YOLOEvaluator(
-        model_path=args.weights,
-        conf_threshold=args.conf,
-        iou_threshold=args.iou,
+    # Use YOLO directly for prediction (it handles visualization)
+    model = YOLO(args.weights)
+    results = model.predict(
+        source=args.source,
+        conf=args.conf,
+        iou=args.iou,
+        save=True,
+        project=args.output or "runs/predict",
+        show=args.show,
     )
 
-    source = Path(args.source)
-
-    if source.is_dir():
-        evaluator.batch_predict(
-            image_dir=str(source),
-            output_dir=args.output,
-        )
-    else:
-        annotated, detections = evaluator.predict_and_visualize(
-            image_path=str(source),
-            output_path=args.output,
-            show=args.show,
-        )
-        print(f"\nDetected {len(detections)} defects:")
-        for det in detections:
-            print(f"  - {det['class_name']}: {det['confidence']:.2f}")
+    # Print summary
+    total_detections = sum(len(r.boxes) if r.boxes is not None else 0 for r in results)
+    print(f"\n✓ Processed {len(results)} images, found {total_detections} defects")
 
 
 def main():
@@ -162,6 +292,12 @@ def main():
         "--data-path", type=str, default=None, help="Override data path"
     )
     parser.add_argument("--model", type=str, default=None, help="YOLO model to use")
+    parser.add_argument(
+        "--freeze",
+        type=int,
+        default=None,
+        help="Number of layers to freeze (0=none, 10=backbone)",
+    )
     parser.add_argument(
         "--weights", type=str, default=None, help="Path to trained weights"
     )
@@ -194,6 +330,9 @@ def main():
         "--show", action="store_true", help="Display prediction results"
     )
     parser.add_argument("--name", type=str, default=None, help="Run name for outputs")
+    parser.add_argument(
+        "--skip-setup", action="store_true", help="Skip auto-install of dependencies"
+    )
 
     args = parser.parse_args()
     config = load_config(args.config)

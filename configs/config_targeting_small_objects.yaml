@@ -1,36 +1,27 @@
-# =============================================================================
-# PCB Defect Detection Configuration
-# =============================================================================
+# This config is optimized for detecting tiny defects:
+# Mouse Bite (MB): <15px, very small
+# Conductor Scratch (CS): <3px wide, thin lines
 
 seed: 42
 project_name: "PCB_Defect_Detection"
 
-# =============================================================================
-# MODEL CONFIGURATION
-# =============================================================================
 model:
-  name: "yolov8m"
+  # P2 architecture instead of standard yolov8m, P2 adds a detection head at stride 4 (vs stride 8 for P3), this preserves tiny features (<15px) that disappear in standard P5 layer
+  name: "yolov8m-p2"
   pretrained: true
-  freeze_strategy: "none"  # Options: "none", "backbone", "partial"
+  freeze_strategy: "none"
   freeze_layers: 10
 
 # =============================================================================
 # DATA CONFIGURATION
 # =============================================================================
 data:
-  # For unsplit data: just images/ and labels/ folders
-  # For pre-split data: images/{train,val} and labels/{train,val}
-  # The system auto-detects which format you have
-  # UCloud path (override with --data-path for local development)
   root: "/work/Data_YOLO_unsplit"
   
-  # Split configuration (only used if data is NOT pre-split)
   split:
-    val_ratio: 0.15     # 15% for validation
-    test_ratio: 0.15    # 15% for test (held out for final evaluation)
-    # Note: train_ratio = 1 - val_ratio - test_ratio = 70%
+    val_ratio: 0.15
+    test_ratio: 0.15
   
-  # Paths (for pre-split data)
   train_images: "images/train"
   train_labels: "labels/train"
   val_images: "images/val"
@@ -42,19 +33,19 @@ data:
     1: "SP"
     2: "SC"
     3: "OP"
-    4: "MB"
+    4: "MB"  
     5: "HB"
-    6: "CS"
+    6: "CS"   
     7: "CFO"
     8: "BMFO"
 
 # =============================================================================
-# TRAINING CONFIGURATION
+# TRAINING CONFIGURATION 
 # =============================================================================
 training:
-  epochs: 100
+  epochs: 100  
+  imgsz: 640    # Keep identical preprocessing across models for fair comparison
   batch_size: 16
-  imgsz: 640
   patience: 50
   save_period: 10
   workers: 8
@@ -71,7 +62,7 @@ training:
     warmup_bias_lr: 0.1
 
 # =============================================================================
-# AUGMENTATION CONFIGURATION
+# AUGMENTATION CONFIGURATION 
 # =============================================================================
 augmentation:
   enabled: true
@@ -94,7 +85,7 @@ augmentation:
 # =============================================================================
 output:
   project: "PCB_Defect_Detection"
-  name: "train"
+  name: "small_objects_p2"
   exist_ok: true
   save: true
   save_txt: true
@@ -109,5 +100,5 @@ wandb:
   project: "PCB_Defect_Detection"
   entity: "jojs-it-universitetet-i-k-benhavn"
   run_name: null
-  tags: ["yolov8", "pcb", "defect-detection"]
+  tags: ["yolov8-p2", "pcb", "small-objects"]
   mode: "online"

@@ -19,12 +19,20 @@ class ModelLoader:
 
     # Available YOLO model variants
     YOLO_VARIANTS = {
-        # YOLOv8
+        # YOLOv8 - Standard
         "yolov8n": "yolov8n.pt",
         "yolov8s": "yolov8s.pt",
         "yolov8m": "yolov8m.pt",
         "yolov8l": "yolov8l.pt",
         "yolov8x": "yolov8x.pt",
+        # YOLOv8 - P2 (Small Object Detection)
+        # P2 adds an extra detection head at stride 4 (vs stride 8 for P3)
+        # This preserves tiny features (<15px) that disappear in standard P5 architecture
+        "yolov8n-p2": "yolov8n-p2.yaml",
+        "yolov8s-p2": "yolov8s-p2.yaml",
+        "yolov8m-p2": "yolov8m-p2.yaml",
+        "yolov8l-p2": "yolov8l-p2.yaml",
+        "yolov8x-p2": "yolov8x-p2.yaml",
         # YOLOv9
         "yolov9t": "yolov9t.pt",
         "yolov9s": "yolov9s.pt",
@@ -118,7 +126,7 @@ class ModelLoader:
             # Freeze backbone (first N layers)
             print(f"Freezing backbone (first {freeze_layers} layers)")
             model.model.model[:freeze_layers].requires_grad_(False)
-            
+
         elif strategy == "partial":
             # Freeze specific number of layers
             print(f"Freezing first {freeze_layers} layers (partial)")
@@ -140,18 +148,18 @@ class ModelLoader:
                 frozen += param.numel()
 
         total = trainable + frozen
-        print(f"  Trainable params: {trainable:,} ({100*trainable/total:.1f}%)")
-        print(f"  Frozen params: {frozen:,} ({100*frozen/total:.1f}%)")
+        print(f"  Trainable params: {trainable:,} ({100 * trainable / total:.1f}%)")
+        print(f"  Frozen params: {frozen:,} ({100 * frozen / total:.1f}%)")
 
     def print_model_info(self, model: YOLO) -> None:
         """Print model architecture information."""
         print("\n" + "=" * 50)
         print("Model Information")
         print("=" * 50)
-        
+
         # Count parameters
         total_params, trainable_params = self.count_parameters(model)
-        
+
         print(f"  Model: {self.model_config.get('name', 'unknown')}")
         print(f"  Total parameters: {total_params:,}")
         print(f"  Trainable parameters: {trainable_params:,}")
@@ -192,4 +200,3 @@ class ModelLoader:
             device = "cpu"
             print("Using CPU")
         return device
-

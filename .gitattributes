@@ -1,0 +1,10 @@
+# Force Unix line endings for shell scripts
+*.sh text eol=lf
+
+# Keep Python files with LF
+*.py text eol=lf
+
+# YAML files
+*.yaml text eol=lf
+*.yml text eol=lf
+

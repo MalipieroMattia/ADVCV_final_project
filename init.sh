@@ -135,6 +135,7 @@ if [[ "$SKIP_VENV" == false ]]; then
     if [[ "$SKIP_DEPS" == false ]]; then
         pip install --upgrade pip --quiet
         [ -f "$REQUIREMENTS_FILE" ] && pip install -r "$REQUIREMENTS_FILE" --quiet
+        
     fi
 fi
 
