@@ -46,6 +46,7 @@ if "--skip-setup" not in sys.argv:
 import argparse  # noqa: E402
 import yaml  # noqa: E402
 
+import wandb  # noqa: E402
 from ultralytics import YOLO  # noqa: E402
 from model.model_loader import ModelLoader  # noqa: E402
 from utils.training import YOLOTrainer  # noqa: E402
@@ -118,14 +119,37 @@ def train(args, config: dict) -> None:
         best_weights = f"{results.save_dir}/weights/best.pt"
         evaluator = YOLOEvaluator(model_path=best_weights)
 
-        # Evaluate on test set (YOLO handles wandb logging, we add error analysis)
-        _ = evaluator.evaluate(
+        # Evaluate on test set
+        test_metrics = evaluator.evaluate(
             data_yaml=data_yaml_path,
             split="test",
             project=str(results.save_dir),
             name="test_evaluation",
             analyze_errors=True,
         )
+
+        # Log test metrics to the active WandB run with test/ prefix
+        # Metrics are in 0-1 scale (YOLO format) - multiply by 100 to compare with COCO-style
+        wandb_test_metrics = {
+            "test/mAP50": test_metrics.get("mAP50", 0),
+            "test/mAP50-95": test_metrics.get("mAP50-95", 0),
+            "test/precision": test_metrics.get("precision", 0),
+            "test/recall": test_metrics.get("recall", 0),
+        }
+        # Add per-class AP50 metrics
+        for key, value in test_metrics.items():
+            if key.startswith("AP50_"):
+                wandb_test_metrics[f"test/{key}"] = value
+        
+        if wandb.run is not None:
+            wandb.log(wandb_test_metrics)
+            wandb.summary.update(wandb_test_metrics)
+            print(f"\n✓ Test metrics logged to WandB:")
+        else:
+            print(f"\n⚠ WandB run not active, test metrics not logged to WandB:")
+        
+        print(f"    test/mAP50: {test_metrics.get('mAP50', 0):.4f} (×100 = {test_metrics.get('mAP50', 0)*100:.2f}%)")
+        print(f"    test/mAP50-95: {test_metrics.get('mAP50-95', 0):.4f} (×100 = {test_metrics.get('mAP50-95', 0)*100:.2f}%)")
 
         print(
             f"\n✓ Test evaluation complete. Results saved to: {results.save_dir}/test_evaluation/"

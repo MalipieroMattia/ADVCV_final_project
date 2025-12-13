@@ -5,13 +5,16 @@ Trainer class that wraps YOLO training with custom logging and callbacks.
 """
 
 import os
-from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
 import yaml
 
-from ultralytics import YOLO
+from ultralytics import YOLO, settings
 from utils.data_loader import DatasetManager
+
+# Enable wandb integration in ultralytics settings
+# This is required for YOLO to log to wandb
+settings.update({"wandb": True})
 
 
 class YOLOTrainer:
@@ -186,7 +189,7 @@ class YOLOTrainer:
 
     def _print_config_summary(self, train_args: Dict[str, Any]) -> None:
         """Print training configuration summary."""
-        print(f"\nConfiguration:")
+        print("\nConfiguration:")
         print(f"  Model: {self.config.get('model', {}).get('name', 'unknown')}")
         print(f"  Data: {self.data_yaml_path}")
         print(f"  Epochs: {train_args['epochs']}")
