@@ -1,129 +1,79 @@
 #!/usr/bin/env python3
 """
-Merge Split Data
-================
-Merge train/val/test folders back into a single unsplit dataset.
-
-Usage:
-    python scripts/merge_splits.py
-    python scripts/merge_splits.py --input raw_data/Data_YOLO --output raw_data/Data_YOLO_unsplit
+Merge split datasets into unsplit format for UCloud.
+Usage: python scripts/merge_splits.py
 """
 
-import os
+import json
 import shutil
-import argparse
 from pathlib import Path
 
+# Paths
+YOLO_IN = Path("raw_data/Data_YOLO")
+YOLO_OUT = Path("raw_data/raw_data_unsplit/Data_YOLO_unsplit")
+COCO_IN = Path("raw_data/Data_COCO")
+COCO_OUT = Path("raw_data/raw_data_unsplit/Data_COCO_unsplit")
 
-def merge_splits(input_dir: Path, output_dir: Path) -> dict:
-    """
-    Merge train/val/test folders into single images/ and labels/ folders.
-    
-    Args:
-        input_dir: Directory with images/{train,val,test} structure
-        output_dir: Directory for merged data
-        
-    Returns:
-        Dictionary with counts
-    """
-    # Create output directories
-    (output_dir / "images").mkdir(parents=True, exist_ok=True)
-    (output_dir / "labels").mkdir(parents=True, exist_ok=True)
-    
-    counts = {"images": 0, "labels": 0}
-    extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff"}
-    
-    # Process each split
+
+def merge_yolo():
+    if (YOLO_OUT / "images").exists():
+        print("YOLO: already done")
+        return
+    (YOLO_OUT / "images").mkdir(parents=True, exist_ok=True)
+    (YOLO_OUT / "labels").mkdir(parents=True, exist_ok=True)
+
     for split in ["train", "val", "test"]:
-        img_dir = input_dir / "images" / split
-        lbl_dir = input_dir / "labels" / split
-        
+        img_dir = YOLO_IN / "images" / split
         if not img_dir.exists():
             continue
-            
-        print(f"Processing {split}...")
-        
-        # Copy images
-        for img_file in img_dir.iterdir():
-            if img_file.suffix.lower() in extensions:
-                dest = output_dir / "images" / img_file.name
-                if not dest.exists():
-                    shutil.copy2(img_file, dest)
-                    counts["images"] += 1
-                    
-                    # Copy corresponding label
-                    lbl_file = lbl_dir / (img_file.stem + ".txt")
-                    if lbl_file.exists():
-                        shutil.copy2(lbl_file, output_dir / "labels" / lbl_file.name)
-                        counts["labels"] += 1
-    
-    return counts
+        for f in img_dir.glob("*.[jp][pn]g"):
+            shutil.copy2(f, YOLO_OUT / "images" / f.name)
+            lbl = YOLO_IN / "labels" / split / (f.stem + ".txt")
+            if lbl.exists():
+                shutil.copy2(lbl, YOLO_OUT / "labels" / lbl.name)
+    print(f"YOLO: merged to {YOLO_OUT}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Merge split YOLO data into single folder")
-    parser.add_argument("--input", "-i", type=str, default="raw_data/Data_YOLO",
-                        help="Input directory with split data")
-    parser.add_argument("--output", "-o", type=str, default=None,
-                        help="Output directory (default: input_unsplit)")
-    parser.add_argument("--in-place", action="store_true",
-                        help="Merge in place (reorganize input directory)")
-    
-    args = parser.parse_args()
-    
-    input_dir = Path(args.input)
-    
-    if args.in_place:
-        # Create temp merged, then replace
-        output_dir = input_dir.parent / (input_dir.name + "_merged_temp")
-    elif args.output:
-        output_dir = Path(args.output)
-    else:
-        output_dir = input_dir.parent / (input_dir.name + "_unsplit")
-    
-    print(f"\nMerging splits:")
-    print(f"  Input:  {input_dir}")
-    print(f"  Output: {output_dir}\n")
-    
-    if not input_dir.exists():
-        print(f"Error: Input directory not found: {input_dir}")
+def merge_coco():
+    if (COCO_OUT / "annotations.json").exists():
+        print("COCO: already done")
         return
-    
-    counts = merge_splits(input_dir, output_dir)
-    
-    print(f"\nMerged: {counts['images']} images, {counts['labels']} labels")
-    
-    if args.in_place:
-        # Remove old split structure and rename
-        print("\nReorganizing in place...")
-        for split in ["train", "val", "test"]:
-            for subdir in ["images", "labels"]:
-                d = input_dir / subdir / split
-                if d.exists():
-                    shutil.rmtree(d)
-        
-        # Move merged files to original location
-        for subdir in ["images", "labels"]:
-            src = output_dir / subdir
-            dst = input_dir / subdir
-            for f in src.iterdir():
-                shutil.move(str(f), str(dst / f.name))
-        
-        shutil.rmtree(output_dir)
-        print(f"Reorganized {input_dir}")
-    else:
-        print(f"\nOutput saved to: {output_dir}")
-    
-    print("\nStructure for upload:")
-    print("  Data_YOLO_unsplit/")
-    print("  ├── images/")
-    print("  │   ├── image1.jpg")
-    print("  │   └── ...")
-    print("  └── labels/")
-    print("      ├── image1.txt")
-    print("      └── ...")
+    (COCO_OUT / "images").mkdir(parents=True, exist_ok=True)
+
+    for split in ["train2017", "val2017"]:
+        for f in (COCO_IN / split).glob("*.[jp][pn]g"):
+            shutil.copy2(f, COCO_OUT / "images" / f.name)
+
+    merged = {
+        "info": {},
+        "licenses": [],
+        "images": [],
+        "annotations": [],
+        "categories": [],
+    }
+    for name in ["instances_train2017.json", "instances_val2017.json"]:
+        with open(COCO_IN / "annotations" / name) as f:
+            data = json.load(f)
+        merged["images"].extend(data["images"])
+        merged["annotations"].extend(data["annotations"])
+        merged["categories"] = merged["categories"] or data["categories"]
+        merged["info"] = merged["info"] or data.get(
+            "info", {"description": "PCB Dataset"}
+        )
+        merged["licenses"] = merged["licenses"] or data.get("licenses", [])
+
+    # Re-index annotation IDs to ensure uniqueness
+    for i, ann in enumerate(merged["annotations"], start=1):
+        ann["id"] = i
+
+    with open(COCO_OUT / "annotations.json", "w") as f:
+        json.dump(merged, f)
+    print(
+        f"COCO: merged {len(merged['images'])} images, {len(merged['annotations'])} annotations"
+    )
 
 
 if __name__ == "__main__":
-    main()
-
+    merge_yolo()
+    merge_coco()
+    print("Done! Upload raw_data/raw_data_unsplit/ to UCloud")

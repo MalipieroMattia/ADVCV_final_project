@@ -135,6 +135,10 @@ if [[ "$SKIP_VENV" == false ]]; then
     if [[ "$SKIP_DEPS" == false ]]; then
         pip install --upgrade pip --quiet
         [ -f "$REQUIREMENTS_FILE" ] && pip install -r "$REQUIREMENTS_FILE" --quiet
+        
+        # Install Detectron2 for Faster R-CNN (requires PyTorch already installed)
+        echo_info "Installing Detectron2..."
+        pip install 'git+https://github.com/facebookresearch/detectron2.git' --no-build-isolation --quiet
     fi
 fi
 
