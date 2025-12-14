@@ -126,6 +126,9 @@ class YOLOTrainer:
                     "mosaic": self.augmentation_config.get("mosaic", 1.0),
                     "mixup": self.augmentation_config.get("mixup", 0.0),
                     "copy_paste": self.augmentation_config.get("copy_paste", 0.0),
+                    # close_mosaic: Disable mosaic for last N epochs to fine-tune on actual object sizes
+                    # Critical for tiny objects (e.g., Mouse Bite) that get shrunk in mosaic grid
+                    "close_mosaic": self.augmentation_config.get("close_mosaic", 10),
                 }
             )
         else:
