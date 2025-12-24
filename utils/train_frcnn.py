@@ -131,8 +131,13 @@ def prepare_data(data_path, val_ratio=0.15, test_ratio=0.15, seed=42):
 class WandbHook(HookBase):
     """Log training metrics to WandB (matches YOLO logging style)."""
 
-    def __init__(self, period=20):
+    def __init__(self, period=20, max_iter=None):
         self.period = period
+        self.max_iter = max_iter
+        self._start_time = None
+
+    def before_train(self):
+        self._start_time = time.time()
 
     def after_step(self):
         if (self.trainer.iter + 1) % self.period != 0:
@@ -141,24 +146,49 @@ class WandbHook(HookBase):
         storage = self.trainer.storage
         metrics = {}
 
-        # Training losses (like YOLO's train/box_loss, train/cls_loss)
-        for key in [
-            "total_loss",
-            "loss_cls",
-            "loss_box_reg",
-            "loss_rpn_cls",
-            "loss_rpn_loc",
-        ]:
+        # Training losses (like YOLO's train/box_loss, train/cls_loss, train/dfl_loss)
+        loss_mapping = {
+            "total_loss": "train/total_loss",
+            "loss_cls": "train/cls_loss",  # Like YOLO's train/cls_loss
+            "loss_box_reg": "train/box_loss",  # Like YOLO's train/box_loss
+            "loss_rpn_cls": "train/rpn_cls_loss",
+            "loss_rpn_loc": "train/rpn_box_loss",
+        }
+        for key, wandb_key in loss_mapping.items():
             if key in storage._history:
                 try:
-                    metrics[f"train/{key}"], _ = storage.history(key).median(20)
+                    val, _ = storage.history(key).median(20)
+                    metrics[wandb_key] = val
                 except Exception:
                     pass
 
-        # Learning rate (like YOLO's lr/pg0)
+        # Learning rate (like YOLO's lr/pg0, lr/pg1, lr/pg2)
         if "lr" in storage._history:
             try:
-                metrics["train/lr"], _ = storage.history("lr").latest()
+                lr_val, _ = storage.history("lr").latest()
+                metrics["lr/pg0"] = lr_val
+                metrics["lr/pg1"] = lr_val
+                metrics["lr/pg2"] = lr_val
+            except Exception:
+                pass
+
+        # Training progress
+        if self.max_iter:
+            progress = (self.trainer.iter + 1) / self.max_iter
+            metrics["train/progress"] = progress
+
+            # Estimated time remaining
+            if self._start_time:
+                elapsed = time.time() - self._start_time
+                if progress > 0:
+                    eta_seconds = (elapsed / progress) * (1 - progress)
+                    metrics["train/eta_minutes"] = eta_seconds / 60
+
+        # Iteration timing
+        if "time" in storage._history:
+            try:
+                iter_time, _ = storage.history("time").latest()
+                metrics["train/iter_time"] = iter_time
             except Exception:
                 pass
 
@@ -173,33 +203,63 @@ class WandbValHook(HookBase):
         self.eval_period = eval_period
         self.cfg = cfg
         self._last_eval_iter = -1
+        self._epoch = 0
 
     def after_step(self):
         next_iter = self.trainer.iter + 1
         if next_iter % self.eval_period != 0 or next_iter == self._last_eval_iter:
             return
         self._last_eval_iter = next_iter
+        self._epoch += 1
 
         # Get validation results from storage (logged by EvalHook)
         storage = self.trainer.storage
         metrics = {}
 
-        # COCO metrics mapped to YOLO-style names
+        # Main COCO metrics mapped to YOLO-style names
         # COCO returns 0-100 scale, normalize to 0-1 to match YOLO format
-        for key in ["bbox/AP", "bbox/AP50", "bbox/AP75"]:
+        metric_mapping = {
+            "bbox/AP": "metrics/mAP50-95(B)",
+            "bbox/AP50": "metrics/mAP50(B)",
+            "bbox/AP75": "val/mAP75",
+            "bbox/APs": "val/mAP_small",  # Small objects
+            "bbox/APm": "val/mAP_medium",  # Medium objects
+            "bbox/APl": "val/mAP_large",  # Large objects
+        }
+
+        for key, wandb_key in metric_mapping.items():
             full_key = f"pcb_val/{key}" if f"pcb_val/{key}" in storage._history else key
             if full_key in storage._history:
                 try:
                     val, _ = storage.history(full_key).latest()
                     # Normalize from 0-100 to 0-1 scale to match YOLO
-                    val_normalized = val / 100.0
-                    # Map to YOLO-style names: metrics/mAP50(B), metrics/mAP50-95(B)
-                    if key == "bbox/AP":
-                        metrics["metrics/mAP50-95(B)"] = val_normalized
-                    elif key == "bbox/AP50":
-                        metrics["metrics/mAP50(B)"] = val_normalized
+                    metrics[wandb_key] = val / 100.0
                 except Exception:
                     pass
+
+        # Per-class AP50 metrics (like YOLO's val/AP50_MB, val/AP50_CS, etc.)
+        for i, cls_name in enumerate(CLASS_NAMES):
+            key = f"bbox/AP50-{cls_name}"
+            full_key = f"pcb_val/{key}" if f"pcb_val/{key}" in storage._history else key
+            if full_key in storage._history:
+                try:
+                    val, _ = storage.history(full_key).latest()
+                    metrics[f"val/AP50_{cls_name}"] = val / 100.0
+                except Exception:
+                    pass
+
+        # Also log validation losses if available
+        val_loss_keys = ["val_total_loss", "val_loss_cls", "val_loss_box_reg"]
+        for key in val_loss_keys:
+            if key in storage._history:
+                try:
+                    val, _ = storage.history(key).latest()
+                    metrics[f"val/{key.replace('val_', '')}"] = val
+                except Exception:
+                    pass
+
+        # Log epoch number for x-axis alignment with YOLO
+        metrics["epoch"] = self._epoch
 
         if wandb.run and metrics:
             wandb.log(metrics, step=self.trainer.iter)
@@ -225,10 +285,12 @@ class TimeLimitHook(HookBase):
 
 class FRCNNTrainer(DefaultTrainer):
     _max_time_minutes = None  # Class variable, set BEFORE instantiation
+    _max_iter = None  # For progress tracking
 
     def build_hooks(self):
         hooks = super().build_hooks()
-        hooks.append(WandbHook())
+        # Pass max_iter for progress tracking
+        hooks.append(WandbHook(period=20, max_iter=FRCNNTrainer._max_iter))
         if self.cfg.TEST.EVAL_PERIOD > 0:
             hooks.append(WandbValHook(self.cfg.TEST.EVAL_PERIOD, self.cfg))
         if FRCNNTrainer._max_time_minutes:
@@ -238,7 +300,9 @@ class FRCNNTrainer(DefaultTrainer):
     @classmethod
     def build_evaluator(cls, cfg, dataset_name):
         return COCOEvaluator(
-            dataset_name, output_dir=os.path.join(cfg.OUTPUT_DIR, "eval")
+            dataset_name,
+            output_dir=os.path.join(cfg.OUTPUT_DIR, "eval"),
+            tasks=("bbox",),  # Ensure per-class metrics are computed
         )
 
 
@@ -298,23 +362,48 @@ def train(args):
     cfg.MODEL.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
 
-    # Init WandB
+    # Init WandB with comprehensive config (like YOLO)
     wandb_cfg = load_wandb_config()
     wandb.init(
         project=wandb_cfg.get("project", "PCB_Defect_Detection"),
         entity=wandb_cfg.get("entity"),
         name=args.name,
         config={
+            # Model config
             "model": "faster_rcnn_R_50_FPN",
+            "backbone": "ResNet50-FPN",
+            "pretrained": True,
+            # Training config (like YOLO's training.*)
             "epochs": args.epochs,
             "batch": args.batch,
+            "imgsz": 800,  # Detectron2 default short edge
             "lr": args.lr,
+            "momentum": 0.9,  # Detectron2 default
+            "weight_decay": 0.0001,  # Detectron2 default
+            "warmup_iters": cfg.SOLVER.WARMUP_ITERS,
+            "max_iter": max_iter,
+            # Data config
+            "num_classes": len(CLASS_NAMES),
+            "class_names": CLASS_NAMES,
+            "train_images": n_train,
         },
         tags=["faster-rcnn", "detectron2", "pcb"],
     )
 
+    # Log model info (like YOLO's model/GFLOPs, model/parameters)
+    if wandb.run:
+        # Rough parameter count for Faster R-CNN R50-FPN
+        wandb.log(
+            {
+                "model/parameters": 41_000_000,  # ~41M for R50-FPN
+                "model/backbone": "ResNet50",
+                "model/neck": "FPN",
+            }
+        )
+
     # Train
     start_time = time.time()
+    FRCNNTrainer._max_iter = max_iter  # For progress tracking
     if args.max_time:
         FRCNNTrainer._max_time_minutes = args.max_time  # Set BEFORE instantiation
         print(f"  Time limit: {args.max_time} minutes")
@@ -335,7 +424,9 @@ def train(args):
     print(f"\n  Running final evaluation on {eval_dataset}...")
 
     evaluator = COCOEvaluator(
-        eval_dataset, output_dir=os.path.join(cfg.OUTPUT_DIR, "eval")
+        eval_dataset,
+        output_dir=os.path.join(cfg.OUTPUT_DIR, "eval"),
+        tasks=("bbox",),
     )
     results = inference_on_dataset(
         trainer.model, build_detection_test_loader(cfg, eval_dataset), evaluator
@@ -348,18 +439,48 @@ def train(args):
         # This makes direct comparison possible: both models log in 0-1 scale
         ap50 = bbox.get("AP50", 0) / 100.0
         ap = bbox.get("AP", 0) / 100.0
+        ap75 = bbox.get("AP75", 0) / 100.0
 
         metrics = {
             # YOLO-compatible names and scale for direct comparison
             "metrics/mAP50(B)": ap50,
             "metrics/mAP50-95(B)": ap,
-            # Also log with test/val prefix
+            # Also log with test/val prefix (like YOLO's test/mAP50)
             f"{eval_prefix}/mAP50": ap50,
             f"{eval_prefix}/mAP50-95": ap,
+            f"{eval_prefix}/mAP75": ap75,
+            # Size-based metrics (small/medium/large objects)
+            f"{eval_prefix}/mAP_small": bbox.get("APs", 0) / 100.0,
+            f"{eval_prefix}/mAP_medium": bbox.get("APm", 0) / 100.0,
+            f"{eval_prefix}/mAP_large": bbox.get("APl", 0) / 100.0,
+            # Final metrics for summary
+            "final/mAP50": ap50,
+            "final/mAP50-95": ap,
         }
 
         print(f"  mAP50: {ap50:.4f} ({bbox.get('AP50', 0):.2f}%)")
         print(f"  mAP50-95: {ap:.4f} ({bbox.get('AP', 0):.2f}%)")
+        print(f"  mAP75: {ap75:.4f} ({bbox.get('AP75', 0):.2f}%)")
+        print(f"  AP (small): {bbox.get('APs', 0):.2f}%")
+        print(f"  AP (medium): {bbox.get('APm', 0):.2f}%")
+        print(f"  AP (large): {bbox.get('APl', 0):.2f}%")
+
+        # Log per-class AP if available (like YOLO's val/AP50_MB, val/AP50_CS)
+        if hasattr(evaluator, "_coco_eval") and evaluator._coco_eval:
+            try:
+                coco_eval = evaluator._coco_eval["bbox"]
+                # Per-class AP at IoU=0.5
+                precisions = coco_eval.eval["precision"]
+                # precision has shape (iou_thresholds, recall, classes, areas, max_dets)
+                # IoU=0.5 is index 0, all recalls, all areas (index 0), max_det 100
+                for i, cls_name in enumerate(CLASS_NAMES):
+                    if i < precisions.shape[2]:
+                        ap50_cls = precisions[0, :, i, 0, -1].mean() * 100
+                        if ap50_cls >= 0:
+                            metrics[f"{eval_prefix}/AP50_{cls_name}"] = ap50_cls / 100.0
+                            print(f"  AP50 {cls_name}: {ap50_cls:.2f}%")
+            except Exception as e:
+                print(f"  (Per-class AP not available: {e})")
 
         wandb.log(metrics)
         wandb.summary.update(metrics)
