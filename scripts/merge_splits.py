@@ -15,7 +15,7 @@ COCO_IN = Path("raw_data/Data_COCO")
 COCO_OUT = Path("raw_data/raw_data_unsplit/Data_COCO_unsplit")
 
 
-def merge_yolo():
+def merge_yol0():
     if (YOLO_OUT / "images").exists():
         print("YOLO: already done")
         return
