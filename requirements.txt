@@ -28,6 +28,7 @@ opencv-contrib-python>=4.11.0
 # ML/DL utilities
 scikit-learn>=1.7.0
 pillow>=12.0.0
+pycocotools>=2.0.7
 
 # Jupyter support
 jupyter>=1.0.0

@@ -14,6 +14,7 @@ Usage:
 import importlib.util
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -66,6 +67,13 @@ def load_config(config_path: str) -> dict:
 
     print(f"Loaded config from {config_path}")
     return config
+
+
+def count_parameters(model) -> tuple[int, int]:
+    """Return (total_params, trainable_params) for a YOLO model."""
+    total_params = sum(p.numel() for p in model.model.parameters())
+    trainable_params = sum(p.numel() for p in model.model.parameters() if p.requires_grad)
+    return total_params, trainable_params
 
 
 def log_training_visuals(results) -> None:
@@ -159,8 +167,24 @@ def train(args, config: dict) -> None:
     model = model_loader.load_model(checkpoint_path=args.resume)
 
     trainer = YOLOTrainer(model, config, data_yaml_path)
+    start_time = time.time()
     results = trainer.train()
+    elapsed_minutes = (time.time() - start_time) / 60.0
     log_training_visuals(results)
+
+    if wandb.run is not None:
+        total_params, trainable_params = count_parameters(model)
+        frozen_params = total_params - trainable_params
+        trainable_pct = (100.0 * trainable_params / total_params) if total_params else 0.0
+
+        wandb_metrics = {
+            "train/time_minutes": elapsed_minutes,
+            "model/trainable_parameters": trainable_params,
+            "model/frozen_parameters": frozen_params,
+            "model/trainable_pct": trainable_pct,
+        }
+        wandb.log(wandb_metrics)
+        wandb.summary.update(wandb_metrics)
 
     # Run evaluation on test set if it exists
     test_ratio = config.get("data", {}).get("split", {}).get("test_ratio", 0)
@@ -179,6 +203,7 @@ def train(args, config: dict) -> None:
             project=str(results.save_dir),
             name="test_evaluation",
             analyze_errors=True,
+            compute_coco_metrics=True,
         )
 
         # Log test metrics to the active WandB run with test/ prefix
@@ -239,6 +264,7 @@ def evaluate(args, config: dict) -> None:
         project="runs/evaluate",
         name=args.name or "eval",
         analyze_errors=True,
+        compute_coco_metrics=True,
     )
 
     return metrics

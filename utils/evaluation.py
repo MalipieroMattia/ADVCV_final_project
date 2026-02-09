@@ -6,7 +6,7 @@ Only adds what YOLO doesn't provide: error analysis for EDA.
 import csv
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 import cv2 as cv
 import yaml
@@ -37,6 +37,7 @@ class YOLOEvaluator:
         project: str = "runs/evaluate",
         name: str = "eval",
         analyze_errors: bool = True,
+        compute_coco_metrics: bool = False,
     ) -> Dict[str, Any]:
         """
         Run YOLO evaluation and optionally analyze errors.
@@ -84,12 +85,6 @@ class YOLOEvaluator:
         print(f"  Precision: {metrics['precision']:.4f}")
         print(f"  Recall: {metrics['recall']:.4f}")
 
-        metrics_to_save = dict(metrics)
-        metrics_to_save["split"] = split
-        metrics_to_save["conf_threshold"] = self.conf_threshold
-        metrics_to_save["iou_threshold"] = self.iou_threshold
-        self._save_metrics_csv(metrics_to_save, output_dir / "metrics.csv")
-
         # Run error analysis if requested
         if analyze_errors:
             errors = self._analyze_errors(data_yaml, split)
@@ -101,6 +96,18 @@ class YOLOEvaluator:
             self._log_errors_to_wandb(
                 errors, prefix=split, misclass_summary=misclass_summary
             )
+
+        if compute_coco_metrics:
+            coco_metrics = self._compute_coco_size_metrics(data_yaml, split)
+            if coco_metrics:
+                metrics.update(coco_metrics)
+                self._log_coco_metrics_to_wandb(coco_metrics, prefix=split)
+
+        metrics_to_save = dict(metrics)
+        metrics_to_save["split"] = split
+        metrics_to_save["conf_threshold"] = self.conf_threshold
+        metrics_to_save["iou_threshold"] = self.iou_threshold
+        self._save_metrics_csv(metrics_to_save, output_dir / "metrics.csv")
 
         return metrics
 
@@ -344,6 +351,18 @@ class YOLOEvaluator:
             print(f"Could not log errors to wandb: {e}")
             return False
 
+    def _log_coco_metrics_to_wandb(self, coco_metrics: Dict[str, float], prefix: str) -> None:
+        """Log COCO-style metrics to wandb with a split prefix."""
+        try:
+            import wandb
+
+            if wandb.run is None:
+                return
+
+            wandb.log({f"{prefix}/{k}": v for k, v in coco_metrics.items()})
+        except Exception as e:
+            print(f"Could not log COCO metrics to wandb: {e}")
+
     def _save_metrics_csv(self, metrics: Dict[str, Any], output_path: Path) -> None:
         """Save evaluation metrics to a CSV file."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -427,3 +446,151 @@ class YOLOEvaluator:
                         row.get("avg_iou", ""),
                     ]
                 )
+
+    def _compute_coco_size_metrics(self, data_yaml: str, split: str) -> Dict[str, float]:
+        """
+        Compute COCO-style AP/AR for small/medium/large objects using pycocotools.
+
+        Size buckets (COCO):
+        - small: area < 32^2
+        - medium: 32^2 <= area < 96^2
+        - large: area >= 96^2
+        """
+        try:
+            from pycocotools.coco import COCO
+            from pycocotools.cocoeval import COCOeval
+        except Exception as e:
+            print(f"pycocotools not available, skipping COCO metrics: {e}")
+            return {}
+
+        with open(data_yaml, "r") as f:
+            data_config = yaml.safe_load(f)
+
+        base_path = Path(data_config["path"])
+        images_path = base_path / data_config.get(split, f"images/{split}")
+        labels_path = base_path / "labels" / split
+
+        image_files = sorted(
+            list(images_path.glob("*.jpg")) + list(images_path.glob("*.png"))
+        )
+        if not image_files:
+            print("No images found for COCO evaluation")
+            return {}
+
+        # Build COCO ground truth
+        images = []
+        annotations = []
+        categories = []
+        for cls_id in sorted(self.class_names.keys()):
+            categories.append({"id": cls_id + 1, "name": self.class_names[cls_id]})
+
+        ann_id = 1
+        image_id_map: Dict[str, int] = {}
+        for idx, img_path in enumerate(image_files, start=1):
+            img = cv.imread(str(img_path))
+            if img is None:
+                continue
+            h, w = img.shape[:2]
+            images.append(
+                {"id": idx, "file_name": img_path.name, "width": w, "height": h}
+            )
+            image_id_map[img_path.name] = idx
+
+            label_path = labels_path / (img_path.stem + ".txt")
+            if label_path.exists():
+                with open(label_path, "r") as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) < 5:
+                            continue
+                        cls_id = int(parts[0])
+                        cx, cy, bw, bh = map(float, parts[1:5])
+                        x = (cx - bw / 2) * w
+                        y = (cy - bh / 2) * h
+                        box_w = bw * w
+                        box_h = bh * h
+                        area = max(0.0, box_w) * max(0.0, box_h)
+                        annotations.append(
+                            {
+                                "id": ann_id,
+                                "image_id": idx,
+                                "category_id": cls_id + 1,
+                                "bbox": [x, y, box_w, box_h],
+                                "area": area,
+                                "iscrowd": 0,
+                            }
+                        )
+                        ann_id += 1
+
+        if not annotations:
+            print("No annotations found for COCO evaluation")
+            return {}
+
+        coco_gt = COCO()
+        coco_gt.dataset = {
+            "images": images,
+            "annotations": annotations,
+            "categories": categories,
+        }
+        coco_gt.createIndex()
+
+        # Build detections
+        detections = []
+        for img_path in image_files:
+            image_id = image_id_map.get(img_path.name)
+            if image_id is None:
+                continue
+
+            results = self.model.predict(
+                str(img_path),
+                conf=self.conf_threshold,
+                iou=self.iou_threshold,
+                verbose=False,
+            )
+            if len(results) == 0 or results[0].boxes is None:
+                continue
+
+            for box in results[0].boxes:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                box_w = max(0.0, x2 - x1)
+                box_h = max(0.0, y2 - y1)
+                detections.append(
+                    {
+                        "image_id": image_id,
+                        "category_id": int(box.cls) + 1,
+                        "bbox": [x1, y1, box_w, box_h],
+                        "score": float(box.conf),
+                    }
+                )
+
+        if not detections:
+            print("No detections found for COCO evaluation")
+            return {}
+
+        coco_dt = coco_gt.loadRes(detections)
+        coco_eval = COCOeval(coco_gt, coco_dt, "bbox")
+        coco_eval.params.areaRng = [
+            [0**2, 32**2],
+            [32**2, 96**2],
+            [96**2, 1e5**2],
+        ]
+        coco_eval.params.areaRngLbl = ["small", "medium", "large"]
+        coco_eval.evaluate()
+        coco_eval.accumulate()
+        coco_eval.summarize()
+
+        stats = coco_eval.stats
+        coco_metrics = {
+            "coco/AP50-95": float(stats[0]),
+            "coco/AP50": float(stats[1]),
+            "coco/AP75": float(stats[2]),
+            "coco/APs": float(stats[3]),
+            "coco/APm": float(stats[4]),
+            "coco/APl": float(stats[5]),
+            "coco/AR": float(stats[8]),
+            "coco/ARs": float(stats[9]),
+            "coco/ARm": float(stats[10]),
+            "coco/ARl": float(stats[11]),
+        }
+
+        return coco_metrics
