@@ -6,7 +6,7 @@ Only adds what YOLO doesn't provide: error analysis for EDA.
 import csv
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 
 import cv2 as cv
 import yaml
@@ -569,12 +569,6 @@ class YOLOEvaluator:
 
         coco_dt = coco_gt.loadRes(detections)
         coco_eval = COCOeval(coco_gt, coco_dt, "bbox")
-        coco_eval.params.areaRng = [
-            [0**2, 32**2],
-            [32**2, 96**2],
-            [96**2, 1e5**2],
-        ]
-        coco_eval.params.areaRngLbl = ["small", "medium", "large"]
         coco_eval.evaluate()
         coco_eval.accumulate()
         coco_eval.summarize()

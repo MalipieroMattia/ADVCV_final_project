@@ -134,10 +134,10 @@ class YOLOTrainer:
         else:
             train_args["augment"] = False
 
-        # Freeze layers (0 = none, 10 = backbone, etc.)
-        freeze_layers = self.config.get("model", {}).get("freeze_layers", 0)
-        if freeze_layers > 0:
-            train_args["freeze"] = freeze_layers
+        # Single source of truth for freezing: Ultralytics native `freeze` arg.
+        # 0 means full fine-tuning.
+        freeze_layers = int(self.config.get("model", {}).get("freeze_layers", 0))
+        train_args["freeze"] = freeze_layers
 
         # Output settings
         train_args.update(
@@ -205,8 +205,7 @@ class YOLOTrainer:
             f"  Augmentation: {'Enabled' if train_args.get('augment', True) else 'Disabled'}"
         )
 
-        freeze = self.config.get("model", {}).get("freeze_strategy", "none")
-        print(f"  Freeze strategy: {freeze}")
+        print(f"  Freeze layers: {train_args.get('freeze', 0)}")
         print("=" * 60 + "\n")
 
 

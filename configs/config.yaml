@@ -11,8 +11,7 @@ project_name: "PCB_Defect_Detection"
 model:
   name: "yolov8m"
   pretrained: true
-  freeze_strategy: "none"  # Options: "none", "backbone", "partial"
-  freeze_layers: 10
+  freeze_layers: 0  # Actual freeze control; typically overridden by --freeze in scripts/run_experiments.sh via main.py
 
 # =============================================================================
 # DATA CONFIGURATION

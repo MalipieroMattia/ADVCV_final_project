@@ -96,12 +96,15 @@ class ModelLoader:
             model_path = f"{model_name}.yaml"
             print(f"Training from scratch: {model_path}")
 
-        model = YOLO(model_path)
-
-        # Apply freeze strategy if specified
-        freeze_strategy = self.model_config.get("freeze_strategy", None)
-        if freeze_strategy:
-            self._apply_freeze_strategy(model, freeze_strategy)
+        # For P2 variants, start from architecture YAML and transfer matching
+        # weights from the non-P2 pretrained checkpoint.
+        if pretrained and model_name.endswith("-p2"):
+            base_model_name = model_name.replace("-p2", "")
+            base_weights = self.YOLO_VARIANTS.get(base_model_name, f"{base_model_name}.pt")
+            print(f"Building {model_path} and transferring weights from {base_weights}")
+            model = YOLO(model_path).load(base_weights)
+        else:
+            model = YOLO(model_path)
 
         # Print model info
         self.print_model_info(model)
@@ -116,6 +119,8 @@ class ModelLoader:
             model: YOLO model instance
             strategy: Freezing strategy ('backbone', 'partial', 'none')
         """
+        # Legacy path: kept for compatibility. Training now uses Ultralytics
+        # native `freeze` argument in utils/training.py as single source of truth.
         if strategy == "none" or strategy is None:
             print("No layers frozen - full fine-tuning")
             return

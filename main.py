@@ -25,9 +25,11 @@ def ensure_dependencies():
     if not requirements_file.exists():
         return
 
-    # Check if ultralytics is installed (key dependency)
-    if importlib.util.find_spec("ultralytics") is not None:
-        return  # Already installed
+    # Install requirements only if key modules are missing.
+    required_modules = ["ultralytics", "pycocotools"]
+    missing_modules = [m for m in required_modules if importlib.util.find_spec(m) is None]
+    if not missing_modules:
+        return
 
     print("📦 Installing dependencies...")
     try:
@@ -216,7 +218,7 @@ def train(args, config: dict) -> None:
         }
         # Add per-class AP50 metrics
         for key, value in test_metrics.items():
-            if key.startswith(("AP50_", "AP50-95_", "Precision_", "Recall_")):
+            if key.startswith(("AP50_", "AP50-95_", "Precision_", "Recall_", "coco/")):
                 wandb_test_metrics[f"test/{key}"] = value
         
         if wandb.run is not None:

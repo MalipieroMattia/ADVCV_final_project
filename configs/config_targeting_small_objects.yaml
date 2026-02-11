@@ -9,8 +9,7 @@ model:
   # P2 architecture instead of standard yolov8m, P2 adds a detection head at stride 4 (vs stride 8 for P3), this preserves tiny features (<15px) that disappear in standard P5 layer
   name: "yolov8m-p2"
   pretrained: true
-  freeze_strategy: "none"
-  freeze_layers: 10
+  freeze_layers: 0  # Actual freeze control;  overridden by --freeze in scripts/run_experiments.sh via main.py
 
 # =============================================================================
 # DATA CONFIGURATION
