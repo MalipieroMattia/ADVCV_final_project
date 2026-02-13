@@ -12,6 +12,7 @@ Usage:
 """
 
 import importlib.util
+import json
 import subprocess
 import sys
 import time
@@ -47,6 +48,7 @@ if "--skip-setup" not in sys.argv:
     ensure_dependencies()
 
 import argparse  # noqa: E402
+import importlib.metadata as importlib_metadata  # noqa: E402
 import yaml  # noqa: E402
 
 import wandb  # noqa: E402
@@ -76,6 +78,47 @@ def count_parameters(model) -> tuple[int, int]:
     total_params = sum(p.numel() for p in model.model.parameters())
     trainable_params = sum(p.numel() for p in model.model.parameters() if p.requires_grad)
     return total_params, trainable_params
+
+
+def ensure_wandb_run(
+    config: dict, run_id: str | None = None, run_name: str | None = None
+) -> bool:
+    """
+    Ensure a W&B run exists for this process.
+
+    Returns:
+        True if this function created the run, False otherwise.
+    """
+    wandb_cfg = config.get("wandb", {})
+    if not wandb_cfg.get("enabled", True):
+        return False
+    if wandb.run is not None:
+        return False
+
+    init_kwargs = {
+        "project": wandb_cfg.get("project", "PCB_Defect_Detection"),
+        "entity": wandb_cfg.get("entity"),
+        "name": run_name or wandb_cfg.get("run_name"),
+        "tags": wandb_cfg.get("tags", ["yolov8", "pcb"]),
+        "mode": wandb_cfg.get("mode", "online"),
+        "config": {
+            "model": config.get("model", {}),
+            "training": config.get("training", {}),
+            "augmentation": config.get("augmentation", {}),
+            "data": config.get("data", {}),
+        },
+    }
+    if run_id:
+        init_kwargs["id"] = run_id
+        init_kwargs["resume"] = "allow"
+
+    try:
+        wandb.init(**init_kwargs)
+        print(f"W&B run initialized: {wandb.run.name}")
+        return True
+    except Exception as e:
+        print(f"Could not initialize W&B run explicitly: {e}")
+        return False
 
 
 def log_training_visuals(results) -> None:
@@ -129,6 +172,100 @@ def log_training_visuals(results) -> None:
         print(f"Logged {len(visuals)} custom plots to wandb.")
 
 
+def _get_git_sha() -> str:
+    """Return current git commit SHA if available."""
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            cwd=Path(__file__).parent,
+        ).strip()
+        return sha
+    except Exception:
+        return "unknown"
+
+
+def _get_package_version(package_name: str) -> str:
+    """Return installed package version, or 'not_installed'."""
+    try:
+        return importlib_metadata.version(package_name)
+    except importlib_metadata.PackageNotFoundError:
+        return "not_installed"
+    except Exception:
+        return "unknown"
+
+
+def log_run_artifact(
+    results,
+    config_path: str,
+    data_yaml_path: str,
+    config: dict,
+    test_metrics: dict | None = None,
+    elapsed_minutes: float | None = None,
+) -> None:
+    """
+    Log a full run bundle as a W&B artifact.
+
+    Includes run outputs directory, config, data.yaml, and run manifest.
+    """
+    if results is None:
+        return
+    if wandb.run is None:
+        print("Wandb run not active, skipping artifact upload.")
+        return
+
+    save_dir = Path(results.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest = {
+        "wandb_run_id": wandb.run.id,
+        "wandb_run_name": wandb.run.name,
+        "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "git_sha": _get_git_sha(),
+        "ultralytics_version": _get_package_version("ultralytics"),
+        "pycocotools_version": _get_package_version("pycocotools"),
+        "config_path": str(Path(config_path).resolve()),
+        "data_yaml_path": str(Path(data_yaml_path).resolve()),
+        "save_dir": str(save_dir.resolve()),
+        "model_name": config.get("model", {}).get("name", "unknown"),
+        "freeze_layers": config.get("model", {}).get("freeze_layers", 0),
+        "epochs": config.get("training", {}).get("epochs", None),
+        "imgsz": config.get("training", {}).get("imgsz", None),
+        "batch_size": config.get("training", {}).get("batch_size", None),
+        "elapsed_minutes": elapsed_minutes,
+        "test_metrics": test_metrics or {},
+    }
+    manifest_path = save_dir / "run_manifest.json"
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    artifact = wandb.Artifact(
+        name=f"run_bundle_{wandb.run.id}",
+        type="training-run",
+        description="Training and evaluation outputs bundle",
+        metadata={
+            "run_id": wandb.run.id,
+            "model": manifest["model_name"],
+            "freeze_layers": manifest["freeze_layers"],
+            "git_sha": manifest["git_sha"],
+        },
+    )
+
+    artifact.add_dir(str(save_dir), name="run_outputs")
+
+    cfg_path = Path(config_path)
+    if cfg_path.exists():
+        artifact.add_file(str(cfg_path), name="config_used.yaml")
+
+    data_cfg = Path(data_yaml_path)
+    if data_cfg.exists():
+        artifact.add_file(str(data_cfg), name="data_used.yaml")
+
+    wandb.log_artifact(artifact, aliases=["latest", wandb.run.id])
+    print(f"Uploaded W&B artifact: run_bundle_{wandb.run.id}")
+
+
 def train(args, config: dict) -> None:
     """Run training pipeline with automatic test evaluation."""
     print("\n" + "=" * 60)
@@ -151,92 +288,119 @@ def train(args, config: dict) -> None:
         config["wandb"]["run_name"] = args.name
     if args.test_run:
         config["training"]["epochs"] = 1
-        print("\n🧪 TEST RUN MODE: Training for 1 epoch only\n")
+        print("\nTEST RUN MODE: training for 1 epoch only\n")
 
-    device = ModelLoader.get_device()
-    config["training"]["device"] = device
+    created_wandb_run = ensure_wandb_run(config)
+    wandb_run_id = wandb.run.id if wandb.run is not None else None
+    wandb_run_name = wandb.run.name if wandb.run is not None else None
 
-    data_manager = DatasetManager(config)
-    is_valid, counts = data_manager.verify_dataset()
+    results = None
+    model = None
+    data_yaml_path = None
+    test_metrics = None
+    elapsed_minutes = None
 
-    if not is_valid:
-        print("\n❌ Dataset not found or incomplete!")
-        return
+    try:
+        device = ModelLoader.get_device()
+        config["training"]["device"] = device
 
-    data_yaml_path = data_manager.create_data_yaml()
+        data_manager = DatasetManager(config)
+        is_valid, _counts = data_manager.verify_dataset()
 
-    model_loader = ModelLoader(config)
-    model = model_loader.load_model(checkpoint_path=args.resume)
+        if not is_valid:
+            print("\nDataset not found or incomplete")
+            return
 
-    trainer = YOLOTrainer(model, config, data_yaml_path)
-    start_time = time.time()
-    results = trainer.train()
-    elapsed_minutes = (time.time() - start_time) / 60.0
-    log_training_visuals(results)
+        data_yaml_path = data_manager.create_data_yaml()
 
-    if wandb.run is not None:
-        total_params, trainable_params = count_parameters(model)
-        frozen_params = total_params - trainable_params
-        trainable_pct = (100.0 * trainable_params / total_params) if total_params else 0.0
+        model_loader = ModelLoader(config)
+        model = model_loader.load_model(checkpoint_path=args.resume)
 
-        wandb_metrics = {
-            "train/time_minutes": elapsed_minutes,
-            "model/trainable_parameters": trainable_params,
-            "model/frozen_parameters": frozen_params,
-            "model/trainable_pct": trainable_pct,
-        }
-        wandb.log(wandb_metrics)
-        wandb.summary.update(wandb_metrics)
+        trainer = YOLOTrainer(model, config, data_yaml_path)
+        start_time = time.time()
+        results = trainer.train()
+        elapsed_minutes = (time.time() - start_time) / 60.0
 
-    # Run evaluation on test set if it exists
-    test_ratio = config.get("data", {}).get("split", {}).get("test_ratio", 0)
-    if test_ratio > 0 and results is not None:
-        print("\n" + "=" * 60)
-        print("  Running Final Evaluation on Test Set")
-        print("=" * 60)
+        if wandb.run is None and wandb_run_id:
+            ensure_wandb_run(config, run_id=wandb_run_id, run_name=wandb_run_name)
 
-        best_weights = f"{results.save_dir}/weights/best.pt"
-        evaluator = YOLOEvaluator(model_path=best_weights)
+        log_training_visuals(results)
 
-        # Evaluate on test set
-        test_metrics = evaluator.evaluate(
-            data_yaml=data_yaml_path,
-            split="test",
-            project=str(results.save_dir),
-            name="test_evaluation",
-            analyze_errors=True,
-            compute_coco_metrics=True,
+        if wandb.run is not None and model is not None:
+            total_params, trainable_params = count_parameters(model)
+            frozen_params = total_params - trainable_params
+            trainable_pct = (
+                (100.0 * trainable_params / total_params) if total_params else 0.0
+            )
+
+            wandb_metrics = {
+                "train/time_minutes": elapsed_minutes,
+                "model/trainable_parameters": trainable_params,
+                "model/frozen_parameters": frozen_params,
+                "model/trainable_pct": trainable_pct,
+            }
+            wandb.log(wandb_metrics)
+            wandb.summary.update(wandb_metrics)
+
+        # Run evaluation on test set if it exists
+        test_ratio = config.get("data", {}).get("split", {}).get("test_ratio", 0)
+        if test_ratio > 0 and results is not None:
+            print("\n" + "=" * 60)
+            print("  Running Final Evaluation on Test Set")
+            print("=" * 60)
+
+            best_weights = f"{results.save_dir}/weights/best.pt"
+            evaluator = YOLOEvaluator(model_path=best_weights)
+
+            test_metrics = evaluator.evaluate(
+                data_yaml=data_yaml_path,
+                split="test",
+                project=str(results.save_dir),
+                name="test_evaluation",
+                analyze_errors=True,
+                compute_coco_metrics=True,
+            )
+
+            if wandb.run is None and wandb_run_id:
+                ensure_wandb_run(config, run_id=wandb_run_id, run_name=wandb_run_name)
+
+            wandb_test_metrics = {
+                "test/mAP50": test_metrics.get("mAP50", 0),
+                "test/mAP50-95": test_metrics.get("mAP50-95", 0),
+                "test/precision": test_metrics.get("precision", 0),
+                "test/recall": test_metrics.get("recall", 0),
+            }
+            for key, value in test_metrics.items():
+                if key.startswith(("AP50_", "AP50-95_", "Precision_", "Recall_", "coco/")):
+                    wandb_test_metrics[f"test/{key}"] = value
+
+            if wandb.run is not None:
+                wandb.log(wandb_test_metrics)
+                wandb.summary.update(wandb_test_metrics)
+                print("\nTest metrics logged to WandB")
+            else:
+                print("\nWandB run not active, test metrics not logged")
+
+            print(f"    test/mAP50: {test_metrics.get('mAP50', 0):.4f}")
+            print(f"    test/mAP50-95: {test_metrics.get('mAP50-95', 0):.4f}")
+            print(f"\nTest evaluation complete. Results saved to: {results.save_dir}/test_evaluation/")
+
+        if wandb.run is None and wandb_run_id:
+            ensure_wandb_run(config, run_id=wandb_run_id, run_name=wandb_run_name)
+
+        log_run_artifact(
+            results=results,
+            config_path=args.config,
+            data_yaml_path=data_yaml_path,
+            config=config,
+            test_metrics=test_metrics,
+            elapsed_minutes=elapsed_minutes,
         )
 
-        # Log test metrics to the active WandB run with test/ prefix
-        # Metrics are in 0-1 scale (YOLO format) - multiply by 100 to compare with COCO-style
-        wandb_test_metrics = {
-            "test/mAP50": test_metrics.get("mAP50", 0),
-            "test/mAP50-95": test_metrics.get("mAP50-95", 0),
-            "test/precision": test_metrics.get("precision", 0),
-            "test/recall": test_metrics.get("recall", 0),
-        }
-        # Add per-class AP50 metrics
-        for key, value in test_metrics.items():
-            if key.startswith(("AP50_", "AP50-95_", "Precision_", "Recall_", "coco/")):
-                wandb_test_metrics[f"test/{key}"] = value
-        
-        if wandb.run is not None:
-            wandb.log(wandb_test_metrics)
-            wandb.summary.update(wandb_test_metrics)
-            print(f"\n✓ Test metrics logged to WandB:")
-        else:
-            print(f"\n⚠ WandB run not active, test metrics not logged to WandB:")
-        
-        print(f"    test/mAP50: {test_metrics.get('mAP50', 0):.4f} (×100 = {test_metrics.get('mAP50', 0)*100:.2f}%)")
-        print(f"    test/mAP50-95: {test_metrics.get('mAP50-95', 0):.4f} (×100 = {test_metrics.get('mAP50-95', 0)*100:.2f}%)")
-
-        print(
-            f"\n✓ Test evaluation complete. Results saved to: {results.save_dir}/test_evaluation/"
-        )
-
-    return results
-
+        return results
+    finally:
+        if created_wandb_run and wandb.run is not None:
+            wandb.finish()
 
 def evaluate(args, config: dict) -> None:
     """Run evaluation pipeline."""
@@ -250,26 +414,34 @@ def evaluate(args, config: dict) -> None:
 
     if args.data_path:
         config["data"]["root"] = args.data_path
+    if args.name:
+        config["wandb"]["run_name"] = args.name
 
-    data_manager = DatasetManager(config)
-    data_yaml_path = data_manager.create_data_yaml()
+    created_wandb_run = ensure_wandb_run(config)
 
-    evaluator = YOLOEvaluator(
-        model_path=args.weights,
-        conf_threshold=args.conf,
-        iou_threshold=args.iou,
-    )
+    try:
+        data_manager = DatasetManager(config)
+        data_yaml_path = data_manager.create_data_yaml()
 
-    metrics = evaluator.evaluate(
-        data_yaml=data_yaml_path,
-        split=args.split,
-        project="runs/evaluate",
-        name=args.name or "eval",
-        analyze_errors=True,
-        compute_coco_metrics=True,
-    )
+        evaluator = YOLOEvaluator(
+            model_path=args.weights,
+            conf_threshold=args.conf,
+            iou_threshold=args.iou,
+        )
 
-    return metrics
+        metrics = evaluator.evaluate(
+            data_yaml=data_yaml_path,
+            split=args.split,
+            project="runs/evaluate",
+            name=args.name or "eval",
+            analyze_errors=True,
+            compute_coco_metrics=True,
+        )
+
+        return metrics
+    finally:
+        if created_wandb_run and wandb.run is not None:
+            wandb.finish()
 
 
 def predict(args, config: dict) -> None:

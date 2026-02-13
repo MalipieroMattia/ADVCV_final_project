@@ -7,6 +7,7 @@ import csv
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+import time
 
 import cv2 as cv
 import yaml
@@ -108,6 +109,7 @@ class YOLOEvaluator:
         metrics_to_save["conf_threshold"] = self.conf_threshold
         metrics_to_save["iou_threshold"] = self.iou_threshold
         self._save_metrics_csv(metrics_to_save, output_dir / "metrics.csv")
+        self._log_eval_files_artifact(output_dir, split)
 
         return metrics
 
@@ -362,6 +364,42 @@ class YOLOEvaluator:
             wandb.log({f"{prefix}/{k}": v for k, v in coco_metrics.items()})
         except Exception as e:
             print(f"Could not log COCO metrics to wandb: {e}")
+
+    def _log_eval_files_artifact(self, output_dir: Path, split: str) -> None:
+        """Upload evaluation CSV files as a W&B artifact tied to the current run."""
+        try:
+            import wandb
+
+            if wandb.run is None:
+                print("No active wandb run, skipping eval artifact upload")
+                return
+
+            files = [
+                output_dir / "metrics.csv",
+                output_dir / "errors.csv",
+                output_dir / "misclass_summary.csv",
+            ]
+            existing_files = [p for p in files if p.exists()]
+            if not existing_files:
+                print("No evaluation CSV files found to upload")
+                return
+
+            artifact = wandb.Artifact(
+                name=f"eval_{split}_{wandb.run.id}_{int(time.time())}",
+                type="evaluation",
+                metadata={
+                    "split": split,
+                    "conf_threshold": self.conf_threshold,
+                    "iou_threshold": self.iou_threshold,
+                },
+            )
+            for p in existing_files:
+                artifact.add_file(str(p), name=p.name)
+
+            wandb.log_artifact(artifact, aliases=[split, "latest"])
+            print(f"Uploaded evaluation artifact for {split} with {len(existing_files)} files")
+        except Exception as e:
+            print(f"Could not upload evaluation artifact: {e}")
 
     def _save_metrics_csv(self, metrics: Dict[str, Any], output_path: Path) -> None:
         """Save evaluation metrics to a CSV file."""
