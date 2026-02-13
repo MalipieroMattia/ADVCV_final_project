@@ -272,11 +272,11 @@ class DatasetManager:
             if dir_path.exists():
                 count = len([f for f in dir_path.iterdir() if f.is_file()])
                 counts[name] = count
-                print(f"  ✓ {name}: {count} files")
+                print(f"{name}: {count} files")
             else:
                 counts[name] = 0
                 is_valid = False
-                print(f"  ✗ {name}: NOT FOUND")
+                print(f"{name}: NOT FOUND")
 
         if not self.is_presplit:
             print(f"\n  Mode: Unsplit data (will split at training time)")

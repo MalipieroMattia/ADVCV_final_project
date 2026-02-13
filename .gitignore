@@ -5,12 +5,18 @@
 
 # Weights & Biases
 /wandb
+/artifacts/**
+!/artifacts/**/
+
+# keep only per-run results.csv
+!/artifacts/**/run_outputs/results.csv
 
 # Checkpoints and model weights
 /checkpoints
 /runs
 *.pt
 *.pth
+/model_architectures/*
 
 # Python cache
 __pycache__/
